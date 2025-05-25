@@ -19,23 +19,47 @@ namespace cAlgo.Robots
         [Parameter("Quantidade Barras", DefaultValue = 100, MinValue = 10, MaxValue = 100)]
         public int qtdBarras { get; set; }
         
-        [Parameter("Pode vender?", DefaultValue = true)]
-        public bool podeVender { get; set; }
-        
         [Parameter("Pode Comprar?", DefaultValue = true)]
         public bool podeComprar { get; set; }        
+        
         
         [Parameter("Comprar na Tendencia ?", DefaultValue = false)]
         public bool comprarTendencia { get; set; }
         
+        
+        
+        [Parameter("Comprar GAP?", DefaultValue = false)]
+        public bool comprarGap { get; set; }
+       
+        
+        
+        [Parameter("Pode vender?", DefaultValue = true)]
+        public bool podeVender { get; set; }
+        
         [Parameter("Vender na Tendencia?", DefaultValue = false)]
         public bool venderTendencia { get; set; }
         
-        [Parameter("Dif Rentradas", DefaultValue = -100.0, MinValue = -2000, MaxValue = 0)]
+        
+        
+        [Parameter("Vender GAP?", DefaultValue = false)]
+        public bool venderGap { get; set; }
+        
+        [Parameter("Dif Rentradas", DefaultValue = -1.0, MinValue = -10, MaxValue = 0)]
         public double DifRentradas { get; set; }
 
         [Parameter("Escalar Rentradas", DefaultValue = false)]
         public bool escalarRentrada { get; set; }
+        
+        [Parameter("Multi Rentradas", DefaultValue = 1, MinValue = 1, MaxValue = 10)]
+        public double multiRentradas { get; set; }
+        
+        [Parameter("Dif Minima Entradas", DefaultValue = 5 , MinValue = 5, MaxValue = 1000)]
+        public int difMinima { get; set; }
+        
+        
+        [Parameter("Fixar Dif Minima", DefaultValue = false)]
+        public bool fixarDifMinima { get; set; }
+        
         
         private double ultimaLinhaDesenhada = double.NaN;
         
@@ -189,6 +213,7 @@ namespace cAlgo.Robots
             
            
             bool aprova = true;
+            bool aprovaDifMinima = true;
             
             if(ordensCompra > 0){
                 aprova = profit < DifRentradas * ordensCompra ;
@@ -199,17 +224,25 @@ namespace cAlgo.Robots
             
             double tpPips = 0;
             if(escalarRentrada && ordensCompra > 0){
-              tpPips = Math.Abs((q1 - price) * ordensCompra * 3) / Symbol.PipSize;                      
+              tpPips = Math.Abs((q1 - price) * multiRentradas) / Symbol.PipSize;                      
             }else{
               tpPips = Math.Abs(q1 - price) / Symbol.PipSize;
             }
             
-             if(ordensCompra < ordMax && aprova){
-                
+            if(tpPips < difMinima){
+                if(fixarDifMinima){
+                    tpPips = difMinima;
+                }else{
+                    aprovaDifMinima =false;
+                }
+            }
+            
+             if(ordensCompra < ordMax && aprova && aprovaDifMinima){
+                // COMPRAS NO GAP CONTRA TENDENCIA
                 
                 // ⚡ Parametros Normais de Compra
                 
-                if (Math.Abs(price - min) <= Symbol.PipSize * 2 && podeComprar)
+                if (Math.Abs(price - min) <= Symbol.PipSize * 2 && podeComprar && comprarGap)
                 {
                  
                   
@@ -221,7 +254,7 @@ namespace cAlgo.Robots
                 }
             
                 // ⚡ Parametros Normais de Venda
-                if (Math.Abs(price - max) <= Symbol.PipSize * 2 && podeVender)
+                if (Math.Abs(price - max) <= Symbol.PipSize * 2 && podeVender && venderGap)
                 {
                    
                     var result = ExecuteMarketOrder(TradeType.Sell, SymbolName, volume, "SELL "+ ordensCompra, null, tpPips);
@@ -230,6 +263,19 @@ namespace cAlgo.Robots
                     else
                         Print($"❌ Erro na venda no MAX: {result.Error}");
                 }
+                
+              
+            
+          
+            }
+            
+            
+            
+            
+             if(ordensCompra < ordMax && aprova){
+                // COMPRAS A FAVOR DA  TENDENCIA
+                
+               
                 
                 
                 // Comprar na Tendencia
@@ -260,6 +306,14 @@ namespace cAlgo.Robots
             
           
             }
+            
+            
+            
+            
+            
+            
+            
+            
         }
     }
 }
