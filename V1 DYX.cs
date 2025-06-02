@@ -2,21 +2,33 @@
     using cAlgo.API.Indicators;
     using System;
     using System.Collections.Generic;
-    using System.Linq; // <— necessário para Concat()
+    using System.Linq; 
     
     namespace cAlgo.Robots
     {
         [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
         public class AcceleratorTradingBot : Robot
         {
-            private ExponentialMovingAverage ema;
+
+        #region Campos e Constantes
+
+        private ExponentialMovingAverage ema;
             private AcceleratorOscillator ac;
             private Dictionary<string, int> contadorLossPorAtivo = new Dictionary<string, int>();
             private Dictionary<string, double> prejuizoAcumuladoPorAtivo = new Dictionary<string, double>();
             private Dictionary<string, long> ultimaOperacaoIdPorAtivo = new Dictionary<string, long>();
             private Dictionary<string, int> reentradasPorAtivo = new Dictionary<string, int>();
             private Dictionary<string, int> entradasPositivas = new Dictionary<string, int>();
-    
+            private readonly Queue<int> forcaVHistory = new Queue<int>(capacity: 5);
+            
+            private int consecutiveUpCount = 0;
+            private int consecutiveDownCount = 0;
+            private double currentMaxHigh = double.MinValue;
+            private double currentMinLow = double.MaxValue;
+            private const string TopLineName = "TopLine";
+            private const string BottomLineName = "BottomLine";
+
+            
             // Ativos para operar “contra” a USDX (quando o USDX cai, compramos estes ativos)
                 private readonly string[] ativos =
                 {
@@ -26,25 +38,108 @@
                     "NZDUSD",
                     "EURGBP",  // também contra o dólar
                     "EURJPY",
-                    "XAUUSD"   // ouro costuma subir com dólar fraco
+                    "XAUUSD",   // ouro costuma subir com dólar fraco
+                    "XAGUSD",
+                    "USDCAD",
+                    
                 };
                 
                 // Ativos para operar “a favor” da USDX (quando o USDX sobe, compramos estes ativos)
                 private readonly string[] ativosOpostos =
                 {
-                    "USDJPY",  // par se beneficia de dólar mais forte
-                    "USDCHF",
-                    "USDCAD"
+                    // par se beneficia de dólar mais forte
+                    
+                    "NVDA.US",
                 };
 
             
-            //  "USDCHF", "USDJPY", "USDCAD"
+            //   "USDCAD"
     
             private readonly string[] ativosGeral;
             private int contadorGlobal;
+            private int MaximoPosicoesPorAtivo;
             
+            [Parameter("Capital por Entrada", DefaultValue = 1)]
+            public double capitalPorEntrada { get; set; }
+            
+             [Parameter("Estratégia", DefaultValue = TipoCalculo.IsAccelerating)]
+             public TipoCalculo estrategia { get; set; }
+            
+            
+            [Parameter("Pode comprar", DefaultValue = true)]
+            public bool podeComprar { get; set; }
+            
+            [Parameter("Pode vender", DefaultValue = true)]
+            public bool podeVender { get; set; }
+            
+            [Parameter("Entrar Ativos Opostos", DefaultValue = true)]
+            public bool ativarAtivosOpostos { get; set; }
+            
+            
+            // --- Parâmetros para habilitar/desabilitar entrada em cada ativo ---
+            [Parameter("Entrar EURUSD", DefaultValue = true)]
+            public bool PodeEntrarEURUSD { get; set; }
+            
+            [Parameter("Entrar GBPUSD", DefaultValue = true)]
+            public bool PodeEntrarGBPUSD { get; set; }
+            
+            [Parameter("Entrar NZDUSD", DefaultValue = true)]
+            public bool PodeEntrarNZDUSD { get; set; }
+            
+            [Parameter("Entrar EURGBP", DefaultValue = true)]
+            public bool PodeEntrarEURGBP { get; set; }
+            
+            [Parameter("Entrar AUDUSD", DefaultValue = true)]
+            public bool PodeEntrarAUDUSD { get; set; }
+            
+            
+            [Parameter("Entrar USDCAD", DefaultValue = true)]
+            public bool PodeEntrarUSDCAD { get; set; }
+            
+            [Parameter("Entrar EURJPY", DefaultValue = true)]
+            public bool PodeEntrarEURJPY { get; set; }
+            
+            [Parameter("Entrar XAUUSD", DefaultValue = true)]
+            public bool PodeEntrarXAUUSD { get; set; }
+            
+            [Parameter("Entrar XAGUSD", DefaultValue = true)]
+            public bool PodeEntrarXAGUSD { get; set; }
+            
+            [Parameter("Entrar NVDA.US", DefaultValue = true)]
+            public bool PodeEntrarNVDA { get; set; }
+            // ----------------------------------------------------------------------
+
+                       
+            private const bool tpDinamico = true;
+            
+            private const int Win = 10;
+            private const int Loss = 10000;
+            
+            private const int FavorableCount      = 10;        // número de ativos "a favor"
+            private const int OpposingCount       = 10;        // número de ativos "contra"
+            
+            
+            private double ultimaLinhaDesenhada = double.NaN;
+            
+            public enum TipoCalculo
+            {
+                IsAccelerating,
+                CalcularForcaDesdeInicioDoDia,
+                CalcularForcaV,
+                CalcularForcaVAcumulada,
+                RompimentoTopoFundo,
+                Nenhuma
+            }
             
     
+            public AcceleratorTradingBot(){  ativosGeral = ativos.Concat(ativosOpostos).ToArray(); }
+
+
+        #endregion
+
+        #region Configurações por Ativo
+        
+        
             private readonly Dictionary<string, double> tpPorAtivo = new Dictionary<string, double>
             {
                 {"EURUSD", 0},
@@ -52,11 +147,12 @@
                 {"NZDUSD", 0},
                 {"EURGBP", 0},
                 {"AUDUSD", 0},
-                {"USDCHF", 0},
-                {"USDJPY", 0},
                 {"USDCAD", 0},
                 {"EURJPY", 0},
-                {"XAUUSD", 0}
+                {"XAUUSD", 0},                
+                {"XAGUSD", 0},
+                {"NVDA.US", 0},
+                
             };
     
             private readonly Dictionary<string, double> slPorAtivo = new Dictionary<string, double>
@@ -66,26 +162,26 @@
                 {"NZDUSD", 0},
                 {"EURGBP", 0},
                 {"AUDUSD", 0},
-                {"USDCHF", 0},
-                {"USDJPY", 0},
                 {"USDCAD", 0},
                 {"EURJPY", 0},
-                {"XAUUSD", 0}
+                {"XAUUSD", 0},                               
+                {"XAGUSD", 0},
+                {"NVDA.US", 0},
             };
             
             
               private readonly Dictionary<string, double> multiAtivo = new Dictionary<string, double>
             {
-                {"EURUSD", 1},
-                {"GBPUSD", 1},
-                {"NZDUSD", 1},
-                {"EURGBP", 1},
-                {"AUDUSD", 1},
-                {"USDCHF", 1},
-                {"USDJPY", 1},
-                {"USDCAD", 1},
-                {"EURJPY", 1},
-                {"XAUUSD", 5}
+                {"EURUSD", 3},
+                {"GBPUSD", 3},
+                {"NZDUSD", 3},
+                {"EURGBP", 3},
+                {"AUDUSD", 3},
+                {"USDCAD", 3},
+                {"EURJPY", 3},
+                {"XAUUSD", 10},                
+                {"XAGUSD", 10},
+                {"NVDA.US", 0.8},
             };
             
             
@@ -93,14 +189,14 @@
             {
                 {"EURUSD", -5},
                 {"GBPUSD", -5},
-                {"NZDUSD", -5},
-                {"EURGBP", -5},
-                {"AUDUSD", -5},
-                {"USDCHF", -5},
-                {"USDJPY", -5},
-                {"USDCAD", -5},
-                {"EURJPY", -5},
-                {"XAUUSD", -10}
+                {"NZDUSD", -1},
+                {"EURGBP", -1},
+                {"AUDUSD", -1},
+                {"USDCAD", -1},
+                {"EURJPY", -1},
+                {"XAUUSD", -50},                
+                {"XAGUSD", -50},
+                {"NVDA.US", -0.1},
             };
             
                private readonly Dictionary<string, double> multiTpReentrada = new Dictionary<string, double>
@@ -110,52 +206,21 @@
                 {"NZDUSD", 1.2},
                 {"EURGBP", 1.2},
                 {"AUDUSD", 1.2},
-                {"USDCHF", 1.2},
-                {"USDJPY", 1.2},
                 {"USDCAD", 1.2},
                 {"EURJPY", 1.2},
-                {"XAUUSD", 1.5}
+                {"XAUUSD", 1.5},                
+                {"XAGUSD", 1.5},
+                {"NVDA.US", 1.2},
             };
-            
-    
-            [Parameter("Máx. posições abertas por ativo", DefaultValue = 1)]
-            public int MaximoPosicoesPorAtivo { get; set; }
-    
-            [Parameter("Margin galling", DefaultValue = false)]
-            public bool marginGalling { get; set; }
-            
-            [Parameter("Tipo galling", DefaultValue = 1, MinValue = 1, MaxValue = 4)]
-            public int tipoGalling { get; set; }
-            
-            [Parameter("TP", DefaultValue = 1, MinValue = 1)]
-            public int Win { get; set; }
-            
-            [Parameter("Tp Dinamico ?", DefaultValue = false)]
-            public bool tpDinamico { get; set; }
-            
-            [Parameter("SL", DefaultValue = 1, MinValue = 1)]
-            public int Loss { get; set; }
-            
-            [Parameter("Pode comprar", DefaultValue = true)]
-            public bool podeComprar { get; set; }
-            
-            [Parameter("Pode vender", DefaultValue = true)]
-            public bool podeVender { get; set; }
-            
-             [Parameter("Entrar Ativos Opostos", DefaultValue = true)]
-            public bool ativarAtivosOpostos { get; set; }
-            
-            private const int FavorableCount      = 10;        // número de ativos "a favor"
-            private const int OpposingCount       = 10;        // número de ativos "contra"
-            
-            // Construtor: é aqui que podemos atribuir ao readonly de instância
-            public AcceleratorTradingBot()
-            {   
-                
-                ativosGeral = ativos.Concat(ativosOpostos).ToArray();
-            }
-    
-            protected override void OnStart()
+
+
+        #endregion
+
+
+        #region Inicializador do código
+        
+        
+         protected override void OnStart()
             {
                 Print("Bot iniciado.");
                 ema = Indicators.ExponentialMovingAverage(Bars.ClosePrices, 14);
@@ -177,9 +242,179 @@
             
     
                 Positions.Closed += OnPositionClosed;
+                 Timer.Start(5000);
             }
+
+
+        protected override void OnTimer()
+        {
+        
+             foreach (var ativo in ativosGeral){
+                    AjustarStopPorPercentual(ativo);
+                    
+                 }
+                
+            base.OnTimer();
+        }
+
+        protected override void OnBar()
+            {   
+                
+                AtualizarMaximoPosicoes();
+                AtualizarToposBottom();
+                int signal = GetSignal(estrategia);
+                
+                
+                if (signal == 0) return;
+                
+                
+                
+                bool isBuy = signal > 0;         // MUDANÇA: agora 1→compra, -1→venda
+                string direction = isBuy ? "buy" : "sell";
+                
+                 var selectedFavorables = ativos.Take(FavorableCount);
+                 var selectedOpposings  = ativarAtivosOpostos 
+                              ? ativosOpostos.Take(OpposingCount)
+                              : Enumerable.Empty<string>();
+                
+             
+                
+             
+                 // executa as ordens “a favor” do sinal
+                foreach (var symbol in selectedFavorables)
+                {   
+                    
+                    if(VerificarPodeEntrar(symbol)){
+                        ConsultarCompraVenda(symbol, direction, 1);
+                    }
+                }
+                
+                DesenharSetaOperacao(direction);
+                string oppDirection = isBuy ? "sell" : "buy";
+                
+                 
+                
+                foreach (var symbol in selectedOpposings)
+                {   
+                    if(VerificarPodeEntrar(symbol)){
+                        ConsultarCompraVenda(symbol, oppDirection, 2);
+                    }
+                }
+                
+                foreach (var ativo in ativosGeral){
+                    AjustarStopPorPercentual(ativo);
+                    
+                 }
+                
+            }
+      
+            
+            private void DesenharSetaOperacao(string tipo)
+            {
+                string nome = $"seta_{tipo}_{Server.Time.Ticks}";
+                int index = Bars.Count - 1;
     
-            private void OnPositionClosed(PositionClosedEventArgs args)
+                double precoY = tipo.ToLower() == "buy"
+                    ? Bars.LowPrices[index]
+                    : Bars.HighPrices[index];
+    
+                ChartIconType icone = tipo.ToLower() == "buy"
+                    ? ChartIconType.UpArrow
+                    : ChartIconType.DownArrow;
+    
+                Color cor = tipo.ToLower() == "buy" ? Color.Yellow : Color.Aqua;
+    
+                Chart.DrawIcon(nome, icone, index, precoY, cor);
+            }
+            
+            
+            
+                   
+    
+    public int GetSignal(TipoCalculo estrategia)
+    {
+        switch (estrategia)
+        {
+            case TipoCalculo.CalcularForcaV:
+                return CalcularForcaV();
+            case TipoCalculo.CalcularForcaVAcumulada:
+                return CalcularForcaVAcumulada();
+            case TipoCalculo.CalcularForcaDesdeInicioDoDia:
+                return CalcularForcaDesdeInicioDoDia();
+            case TipoCalculo.IsAccelerating:
+                return IsAccelerating();
+            case TipoCalculo.RompimentoTopoFundo:
+                return RompimentoTopoFundo();
+        
+            default:
+                return 0;
+        }
+    }
+    
+  private void DrawOrUpdateHorizontalLine(string name, double price, Color cor)
+        {
+            // Se o preço não mudou, não redesenha (evita flickering)
+            if (Math.Abs(ultimaLinhaDesenhada - price) < Symbol.PipSize)
+                return;
+
+            // Remove a linha anterior (se existir)
+            Chart.RemoveObject(name);
+
+            // Desenha nova linha
+            Chart.DrawHorizontalLine(name, price, cor, 2, LineStyle.Solid);
+
+            // Armazena valor desenhado
+            ultimaLinhaDesenhada = price;
+
+        }
+
+        #endregion
+
+
+        #region Consultas de Posições e Conta
+        
+        private void AtualizarMaximoPosicoes()
+        {
+            // Proteção: evita divisão por zero
+            if (capitalPorEntrada <= 0)
+                MaximoPosicoesPorAtivo = 0;
+            else
+                MaximoPosicoesPorAtivo = (int)(Account.Equity / capitalPorEntrada);
+        }
+        
+        
+          private void AtualizarToposBottom()
+        {
+           int consultaAcumulado = CalcularForcaVAcumulada();
+                
+                if(consultaAcumulado == -1 ){
+               
+                    consecutiveUpCount++;
+                    if(consecutiveUpCount >= 3){
+                     
+                         consecutiveDownCount = 0;
+                        //gaurdo o o topo e atualizo a linha
+                          currentMaxHigh = Symbol.Ask;
+                          DrawOrUpdateHorizontalLine(TopLineName, Symbol.Ask, Color.Yellow);
+                          
+                    }
+                }
+                if(consultaAcumulado == 1 ){
+                    consecutiveDownCount++;
+                        if(consecutiveDownCount >= 3){
+                      
+                         consecutiveUpCount = 0;
+                        //gaurdo o o topo e atualizo a linha
+                          currentMinLow = Symbol.Bid;
+                          DrawOrUpdateHorizontalLine(BottomLineName, Symbol.Bid, Color.Yellow);
+                         
+                    }
+                }
+                
+        }
+        
+        
+        private void OnPositionClosed(PositionClosedEventArgs args)
             {
                 var pos = args.Position;
                 var ativo = pos.SymbolName;
@@ -196,7 +431,7 @@
                 {
                     contadorLossPorAtivo[ativo]++;
                     contadorGlobal++;
-                    double lossPips = Math.Abs(pos.Pips);               // 500 pips
+                    double lossPips = Math.Abs(pos.Pips);              
                     
                 
                     foreach (var ativoG in ativosGeral)
@@ -225,8 +460,9 @@
                     
                 }
             }
-    
-            private int ContarPosicoesAtivas(string ativo)
+            
+            
+             private int ContarPosicoesAtivas(string ativo)
             {
                 int count = 0;
                 foreach (var pos in Positions)
@@ -236,8 +472,9 @@
                 }
                 return count;
             }
-    
-        private double ObterProfitPosicaoAbertaEmDolar(string ativo)
+            
+            
+            private double ObterProfitPosicaoAbertaEmDolar(string ativo)
             {
                 var ultimaAberta = Positions
                     .Where(p => p.SymbolName.Equals(ativo, StringComparison.InvariantCultureIgnoreCase))
@@ -248,110 +485,16 @@
                     ? ultimaAberta.GrossProfit           // negativo se estiver no vermelho
                     : double.NaN;
             }
-            private int CalcularForcaDesdeInicioDoDia()
-            {
-                int contador = 0;
-                DateTime hoje = Server.Time.Date;
-    
-                for (int i = Bars.Count - 1; i >= 0; i--)
-                {
-                    if (Bars.OpenTimes[i].Date != hoje)
-                        break;
-    
-                    if (Bars.ClosePrices[i] > Bars.OpenPrices[i])
-                        contador++;
-                    else if (Bars.ClosePrices[i] < Bars.OpenPrices[i])
-                        contador--;
-                }
-                return contador;
-            }
-    
-            private int CalcularForcaV()
-            {
-                int forca = 0;
-    
-                if (Bars.ClosePrices.Last(1) < Bars.ClosePrices.Last(2) && Bars.ClosePrices.Last(2) > Bars.ClosePrices.Last(3)){
-                    forca = -1;
-                 }
-                if (Bars.ClosePrices.Last(1) > Bars.ClosePrices.Last(2) && Bars.ClosePrices.Last(2) < Bars.ClosePrices.Last(3)){
-                    forca = 1;
-                 }
-    
-                return forca;
-            }
-    
-  
-  
-  
+            
+            
           
-     private void AjustarStopPorPercentual(
-    string ativo,
-    double limiarPercentual     = 0.50,  // quando ativar (75% do caminho ao TP)
-    double slPercentual         = 0.30,  // proteção SL (40% do ganho realizado)
-    double tpExtensaoPercentual = 1.01)  // extensão TP (+10% da distância total)
-{
-    var symbol = Symbols.GetSymbol(ativo);
-    if (symbol == null) return;
+        #endregion
 
-    var abertas = Positions
-        .Where(p => p.SymbolName == ativo && p.GrossProfit > 0);
 
-    foreach (var pos in abertas)
-    {
-        double entryPrice = pos.EntryPrice;
-        TradeType tipo   = pos.TradeType;
-        double marketPrice = tipo == TradeType.Buy ? symbol.Ask : symbol.Bid;
+        #region Consulta e Permisões de Ativos
 
-        // — TP original (se não existir, pega do tpPorAtivo ou Win)
-        double tpPriceAtual = pos.TakeProfit 
-            ?? (tipo == TradeType.Buy
-                    ? entryPrice + ((tpPorAtivo.ContainsKey(ativo) ? tpPorAtivo[ativo] : Win) * symbol.PipSize)
-                    : entryPrice - ((tpPorAtivo.ContainsKey(ativo) ? tpPorAtivo[ativo] : Win) * symbol.PipSize)
-               );
-
-        // — distâncias totais e já realizadas
-        double distanciaTotal  = Math.Abs(tpPriceAtual - entryPrice);
-        double distanciaAtual  = Math.Abs(marketPrice   - entryPrice);
-        double difPercentual   = distanciaAtual / distanciaTotal;
-
-        // só entra quando ultrapassar o limiar percentual
-        if (difPercentual < limiarPercentual)
-            continue;
-
-        // — SL móvel = só 40% do que já andou (nunca ultrapassa o mercado)
-        double newSlMovel = tipo == TradeType.Buy
-            ? entryPrice + (distanciaAtual * slPercentual)
-            : entryPrice - (distanciaAtual * slPercentual);
-
-        // — TP móvel = extensão de 1.10× a distância total
-        double newTpMovel = tipo == TradeType.Buy
-            ? entryPrice + (distanciaTotal * tpExtensaoPercentual)
-            : entryPrice - (distanciaTotal * tpExtensaoPercentual);
-
-       
-
-        // — finalmente aplica
-        var resultado = ModifyPosition(pos, newSlMovel, newTpMovel,ProtectionType.Absolute);
-        if (resultado.IsSuccessful)
-        {
-            Print($"[TRAILING] {ativo} {tipo} #{pos.Id} → SL: {newSlMovel:F5}, TP: {newTpMovel:F5}");
-        }
-        else
-        {
-            Print($"[ERRO CONFIG] {ativo} #{pos.Id} ({tipo}): {resultado.Error}");
-        }
-    }
-}
-
-    
-    
-    
-    
-    
-    
-    
-    
-       private double ObterAtrDiario(string ativo, int periodo)
+     
+        private double ObterAtrDiario(string ativo, int periodo)
             {
                 // Repare: primeiro o TimeFrame, depois o símbolo
                 var dailyBars = MarketData.GetBars(TimeFrame.Daily, ativo);
@@ -367,7 +510,8 @@
                 return atr.Result.LastValue;
             }
 
-            private bool PermiteOperarAtrDinamico(string ativo, double atrPips, string direction, double objetivoPips)
+
+private bool PermiteOperarAtrDinamico(string ativo, double atrPips, string direction, double objetivoPips)
                 {
                     var symbol = Symbols.GetSymbol(ativo);
                     if (symbol == null) return false;
@@ -391,27 +535,59 @@
                     return spacePips >= objetivoPips * 2;
                 }
 
-          
-            private void DesenharSetaOperacao(string tipo)
+
+  public bool VerificarPodeEntrar(string simbolo)
+    {
+        // Converte para maiúsculas para garantir que o usuário possa enviar "eurusd", "EURUSD" ou "Eurusd"
+        switch (simbolo.Trim().ToUpperInvariant())
+        {
+            case "EURUSD":
+                return PodeEntrarEURUSD;
+            case "GBPUSD":
+                return PodeEntrarGBPUSD;
+            case "NZDUSD":
+                return PodeEntrarNZDUSD;
+            case "EURGBP":
+                return PodeEntrarEURGBP;
+            case "AUDUSD":
+                return PodeEntrarAUDUSD;
+            case "USDCAD":
+                return PodeEntrarUSDCAD;
+            case "EURJPY":
+                return PodeEntrarEURJPY;
+            case "XAUUSD":
+                return PodeEntrarXAUUSD;
+            case "XAGUSD":
+                return PodeEntrarXAGUSD;
+            case "NVDA.US":
+                return PodeEntrarNVDA;
+            default:
+                // Se o símbolo não estiver na lista, optamos por retornar false.
+                // Você pode também lançar uma exceção ou logar uma mensagem de erro, conforme a sua lógica.
+                return false;
+        }
+    }
+        #endregion
+
+
+
+        #region Estratégias
+
+        private int CalcularForcaV()
             {
-                string nome = $"seta_{tipo}_{Server.Time.Ticks}";
-                int index = Bars.Count - 1;
+                int forca = 0;
     
-                double precoY = tipo.ToLower() == "buy"
-                    ? Bars.LowPrices[index]
-                    : Bars.HighPrices[index];
+                if (Bars.ClosePrices.Last(1) < Bars.ClosePrices.Last(2) && Bars.ClosePrices.Last(2) > Bars.ClosePrices.Last(3)){
+                    forca = -1;
+                 }
+                if (Bars.ClosePrices.Last(1) > Bars.ClosePrices.Last(2) && Bars.ClosePrices.Last(2) < Bars.ClosePrices.Last(3)){
+                    forca = 1;
+                 }
     
-                ChartIconType icone = tipo.ToLower() == "buy"
-                    ? ChartIconType.UpArrow
-                    : ChartIconType.DownArrow;
-    
-                Color cor = tipo.ToLower() == "buy" ? Color.Yellow : Color.Aqua;
-    
-                Chart.DrawIcon(nome, icone, index, precoY, cor);
+                return forca;
             }
-    
-    
-       private int IsAccelerating()
+            
+            private int IsAccelerating()
         {
             double ac4 = ac.Result.Last(4);
             double ac3 = ac.Result.Last(3);
@@ -437,54 +613,176 @@
             
             return retorno;
         }
-
+        
+        
+        private int CalcularForcaDesdeInicioDoDia()
+            {
+                int contador = 0;
+                DateTime hoje = Server.Time.Date;
     
-            protected override void OnBar()
-            {   
-            
-                int signal = CalcularForcaV();
-                if (signal == 0) return;
-                
-                
-                
-                
-                bool isBuy = signal > 0;         // MUDANÇA: agora 1→compra, -1→venda
-                string direction = isBuy ? "buy" : "sell";
-                
-                 var selectedFavorables = ativos.Take(FavorableCount);
-                 var selectedOpposings  = ativarAtivosOpostos 
-                              ? ativosOpostos.Take(OpposingCount)
-                              : Enumerable.Empty<string>();
-                
-             
-                
-             
-                 // executa as ordens “a favor” do sinal
-                foreach (var symbol in selectedFavorables)
-                {   
-                
-                    ConsultarCompraVenda(symbol, direction, 1);
-                    DesenharSetaOperacao(direction);
-                }
-                
-                string oppDirection = isBuy ? "sell" : "buy";
-                
-                 
-                
-                foreach (var symbol in selectedOpposings)
+                for (int i = Bars.Count - 1; i >= 0; i--)
                 {
-                    ConsultarCompraVenda(symbol, oppDirection, 2);
-                    DesenharSetaOperacao(oppDirection);
+                    if (Bars.OpenTimes[i].Date != hoje)
+                        break;
+    
+                    if (Bars.ClosePrices[i] > Bars.OpenPrices[i])
+                        contador++;
+                    else if (Bars.ClosePrices[i] < Bars.OpenPrices[i])
+                        contador--;
+                }
+                return contador;
+            }
+            
+
+            private int CalcularForcaVAcumulada()
+                {
+                    // 1) Obter o sinal “puro” e enfileirar
+                    int sinalAtual = CalcularForcaV();
+                    forcaVHistory.Enqueue(sinalAtual);
+                    if (forcaVHistory.Count > 5)
+                        forcaVHistory.Dequeue();
+                    
+                    // 2) Se ainda não há 5 valores, retorna 0
+                    if (forcaVHistory.Count < 5)
+                        return 0;
+                
+                    // 3) Transforma a fila em array; o índice 0 é o elemento MAIS ANTIGO
+                    //    e o índice 4 é o elemento MAIS RECENTE.
+                    var arraySinais = forcaVHistory.ToArray();
+                    double somaPonderada = 0;
+                
+                    // 4) Atribuímos pesos crescentes de 1 até 5.
+                    //    Peso 1 → arraySinais[0] (mais antigo)
+                    //    Peso 5 → arraySinais[4] (mais recente)
+                    for (int i = 0; i < 5; i++)
+                    {
+                        int peso = i + 1;           // i=0 → peso=1, i=4 → peso=5 (mais forte)
+                        somaPonderada += arraySinais[i] * peso;
+                    }
+                    
+                    // 5) Retorna o sinal final
+                    if (somaPonderada > 0)
+                        return 1;
+                    else if (somaPonderada < 0)
+                        return -1;
+                    else
+                        return 0;
+                }
+
+          private int RompimentoTopoFundo()
+            {
+                int value = 0;
+            
+                // Fecha da vela anterior:
+                double closeAnterior = Bars.ClosePrices.Last(1);
+               
+               int statusForca = CalcularForcaV();
+               
+                
+               if(statusForca == 0){
+                return 0;
+               }
+                
+                if (closeAnterior > currentMaxHigh && statusForca == -1 && currentMaxHigh > double.MinValue)
+                {
+                    value = -1;  // Rompimento de topo → sinal de alta
                 }
                 
-                 foreach (var ativo in ativosGeral){
-                    AjustarStopPorPercentual(ativo);
-                    
-                 }
-                
+                else if (closeAnterior < currentMinLow && statusForca == 1 && currentMinLow < double.MaxValue) 
+                {
+                    value = 1;  // Rompimento de fundo → sinal de baixa
+                }
+            
+                return value;
             }
+            
+            
+            
+        
+
+
+        #endregion
+
+
+
+
+        #region Analise de Compras e vendas e Stop Movel
+
+private void AjustarStopPorPercentual(string ativo)
+{
+    var symbol = Symbols.GetSymbol(ativo);
+    if (symbol == null) return;
     
-            private void ConsultarCompraVenda(string ativo, string tipo, double correletion)
+    double distanciaMinima = 1;
+    double profity = 2;
+   if(ativo == "XAUUSD" || ativo == "USDX" || ativo == "USDCAD"){
+    distanciaMinima = 3;
+    profity = 5;
+   }
+   
+   if(ativo == "NVDA.US"){
+    distanciaMinima = 0.05;
+    profity = 0.5;
+   }
+
+    // Seleciona posições abertas para este ativo com lucro > 2 (USD ou equivalente)
+    var abertas = Positions
+        .Where(p => p.SymbolName == ativo && p.GrossProfit > profity);
+
+    double pipSize = symbol.PipSize;
+
+    foreach (var pos in abertas)
+    {
+        double entryPrice = pos.EntryPrice;
+        TradeType tipo    = pos.TradeType;
+        double marketPrice = tipo == TradeType.Buy ? symbol.Bid : symbol.Ask; 
+        double newSlMovel  = 0;
+        double slAtual     = pos.StopLoss ?? entryPrice;  // se não houver SL, assume entry
+      
+
+        // Para BUY: SL deve ficar marketPrice - (distanciaMinima * pipSize)
+        // Para SELL: SL deve ficar marketPrice + (distanciaMinima * pipSize)
+        if (tipo == TradeType.Buy)
+            newSlMovel = marketPrice - (distanciaMinima * pipSize);
+        else
+            newSlMovel = marketPrice + (distanciaMinima * pipSize);
+
+        // Garante que, para BUY, new SL nunca fique abaixo de entryPrice + (distanciaMinima * pipSize)
+        // e para SELL, new SL nunca fique acima de entryPrice - (distanciaMinima * pipSize)
+        if (tipo == TradeType.Buy)
+        {
+            double minimoPermitido = entryPrice + (distanciaMinima * pipSize);
+            if (newSlMovel <= minimoPermitido)
+                newSlMovel = minimoPermitido;
+        }
+        else // SELL
+        {
+            double maximoPermitido = entryPrice - (distanciaMinima * pipSize);
+            if (newSlMovel >= maximoPermitido)
+                newSlMovel = maximoPermitido;
+        }
+
+        // Só modifica se o novo SL for "mais favorável" (ou seja, garante lucro mínimo maior)
+        bool deveAjustar = tipo == TradeType.Buy
+            ? newSlMovel > slAtual
+            : newSlMovel < slAtual;
+
+        if (!deveAjustar)
+            continue;
+
+        // Mantém o TP atual (não altera)
+        double tpAtual = pos.TakeProfit ?? 0;
+
+        var resultado = ModifyPosition(pos, newSlMovel, tpAtual, ProtectionType.Absolute);
+        if (resultado.IsSuccessful)
+            Print($"[TRAILING] {ativo} {tipo} #{pos.Id} → SL atualizado para {newSlMovel:F5}");
+        else
+            Print($"[ERRO CONFIG] {ativo} #{pos.Id} ({tipo}): {resultado.Error}");
+    }
+}
+
+
+    private void ConsultarCompraVenda(string ativo, string tipo, double correletion)
             {   
                 
                 
@@ -513,54 +811,11 @@
                 double tpPips = tpPorAtivo.ContainsKey(ativo) ? tpPorAtivo[ativo] : 100;
                 double slPips = slPorAtivo.ContainsKey(ativo) ? slPorAtivo[ativo] : 66;
                 double volume = symbol.VolumeInUnitsMin;
-                double acumulado = prejuizoAcumuladoPorAtivo[ativo];
-                double lucroPorVolume = symbol.PipValue * tpPips * volume;
-    
-                if (lucroPorVolume > 0 && marginGalling)
-                {   
-                    // Entrada diluida 
-                    if(entradasPositivas[ativo] >= 1 && reentradasPorAtivo[ativo] > 0 && tipoGalling == 1){
-                        volume *= 2;
-                        reentradasPorAtivo[ativo]--;
-                        
-                        if(reentradasPorAtivo[ativo]  <= 0 ){
-                            reentradasPorAtivo[ativo] = 0;
-                        }
-                    }
-                    
-                    if( contadorLossPorAtivo[ativo] > 0 && tipoGalling == 2){
-            
-                        int multiplicador = (int)((acumulado / lucroPorVolume) ) + 1;
-                        volume *= multiplicador;
-                        
-                    }
-                    
-                    
-                    if(ativo == "USDJPY" && entradasPositivas[ativo] >= 1 && contadorGlobal > 0 && tipoGalling == 3){
-                        volume *= 30;
-                        
-                        contadorGlobal = 0;
-                        
-                    }
-                    
-                    
-                    if(contadorLossPorAtivo[ativo] > 0 && tipoGalling == 4){
-                        
-                         volume *= 3;
-                        reentradasPorAtivo[ativo]--;
-                        
-                        if(reentradasPorAtivo[ativo]  <= 0 ){
-                            reentradasPorAtivo[ativo] = 0;
-                        }
-                        
-                    }
-                }
-                
-                
+              
                 
                 // se tpDinamico faça:
                 
-                if(tpDinamico){        
+                if(tpDinamico && ativo != "XAUUSD" && ativo != "USDX"){        
                 double atrPrice = ObterAtrDiario(ativo, 14);
                 double atrPips  = atrPrice / symbol.PipSize;
                 double tpPipsDinamicoAtr = atrPips * 0.25;
@@ -568,7 +823,6 @@
                 bool podeOperar =  PermiteOperarAtrDinamico(ativo, atrPips, tipo, tpPipsDinamicoAtr);
                
                     if(!podeOperar){
-                        //Print("Sem espaço para Operar:", ativo );
                         return;    
                     }else{
                         tpPips = tpPipsDinamicoAtr;    
@@ -583,13 +837,24 @@
                 }
                 if (tipo == "buy" && podeComprar)
                  {
-                        ExecuteMarketOrder(TradeType.Buy, ativo, volume, $"{posicoesAbertas}-BUY- {correletion}", slPips, tpPips);
+                        ExecuteMarketOrder(TradeType.Buy, ativo, volume, $"{posicoesAbertas}", null, tpPips);
                    
                 }
                 if(tipo == "sell" && podeVender && ativo != "XAUUSD"){
                      
-                        ExecuteMarketOrder(TradeType.Sell, ativo, volume, $"{posicoesAbertas}SELL- {correletion}", slPips, tpPips);
+                        ExecuteMarketOrder(TradeType.Sell, ativo, volume, $"{posicoesAbertas}", null, tpPips);
                 } 
             }
         }
-    }
+ 
+    
+    
+    
+
+        #endregion
+
+
+
+
+      }
+         
