@@ -32,48 +32,32 @@
             // Ativos para operar “contra” a USDX (quando o USDX cai, compramos estes ativos)
                 private readonly string[] ativos =
                 {
-                    "EURUSD",  // par se beneficia de dólar mais fraco
+                    "EURUSD", 
                     "GBPUSD",
                     "AUDUSD",
-                    "NZDUSD",
-                    "EURGBP",  // também contra o dólar
+                    "NZDUSD",                   
                     "EURJPY",
-                    "XAUUSD",   // ouro costuma subir com dólar fraco
+                    "XAUUSD",  
                     "XAGUSD",
-                    "USDCAD",
+                   
                     
                 };
                 
                 // Ativos para operar “a favor” da USDX (quando o USDX sobe, compramos estes ativos)
                 private readonly string[] ativosOpostos =
                 {
-                    // par se beneficia de dólar mais forte
-                    
-                    "NVDA.US",
+                
+                    "USDJPY",
                 };
 
             
-            //   "USDCAD"
-    
+         
             private readonly string[] ativosGeral;
             private int contadorGlobal;
-            private int MaximoPosicoesPorAtivo;
             
-            [Parameter("Capital por Entrada", DefaultValue = 1)]
-            public double capitalPorEntrada { get; set; }
             
              [Parameter("Estratégia", DefaultValue = TipoCalculo.IsAccelerating)]
              public TipoCalculo estrategia { get; set; }
-            
-            
-            [Parameter("Pode comprar", DefaultValue = true)]
-            public bool podeComprar { get; set; }
-            
-            [Parameter("Pode vender", DefaultValue = true)]
-            public bool podeVender { get; set; }
-            
-            [Parameter("Entrar Ativos Opostos", DefaultValue = true)]
-            public bool ativarAtivosOpostos { get; set; }
             
             
             // --- Parâmetros para habilitar/desabilitar entrada em cada ativo ---
@@ -86,15 +70,8 @@
             [Parameter("Entrar NZDUSD", DefaultValue = true)]
             public bool PodeEntrarNZDUSD { get; set; }
             
-            [Parameter("Entrar EURGBP", DefaultValue = true)]
-            public bool PodeEntrarEURGBP { get; set; }
-            
             [Parameter("Entrar AUDUSD", DefaultValue = true)]
             public bool PodeEntrarAUDUSD { get; set; }
-            
-            
-            [Parameter("Entrar USDCAD", DefaultValue = true)]
-            public bool PodeEntrarUSDCAD { get; set; }
             
             [Parameter("Entrar EURJPY", DefaultValue = true)]
             public bool PodeEntrarEURJPY { get; set; }
@@ -105,8 +82,9 @@
             [Parameter("Entrar XAGUSD", DefaultValue = true)]
             public bool PodeEntrarXAGUSD { get; set; }
             
-            [Parameter("Entrar NVDA.US", DefaultValue = true)]
-            public bool PodeEntrarNVDA { get; set; }
+            [Parameter("Entrar USDJPY", DefaultValue = true)]
+            public bool PodeEntrarUSDJPY { get; set; }
+            
             // ----------------------------------------------------------------------
 
                        
@@ -139,20 +117,57 @@
 
         #region Configurações por Ativo
         
-        
+        //vamos criar um dictionary para saber quais pode comprar e quais pode vender ativo por ativo.
+             
+             private readonly Dictionary<string, bool> ativoPodeComprar = new Dictionary<string, bool>
+            {
+                {"EURUSD", true},
+                {"GBPUSD", true},                
+                {"AUDUSD", true},                
+                {"XAUUSD", true},   
+                {"NZDUSD", true},
+                {"EURJPY", true},                 
+                {"XAGUSD", true},                               
+                {"USDJPY", false},
+            };  
+            
+            private readonly Dictionary<string, bool> ativoPodeVender = new Dictionary<string, bool>
+            {
+                {"EURUSD", false},
+                {"GBPUSD", false},                
+                {"AUDUSD", false},                
+                {"XAUUSD", false},
+                {"NZDUSD", false},
+                {"EURJPY", true}, 
+                {"XAGUSD", true},
+                {"USDJPY", true},
+                
+            };
+                
+                
+              private readonly Dictionary<string, double> entradasPermitidas = new Dictionary<string, double>
+            {
+                {"EURUSD", 2},
+                {"GBPUSD", 2},
+                {"NZDUSD", 2},
+                {"AUDUSD", 2},
+                {"EURJPY", 2},
+                {"XAUUSD", 1},                
+                {"XAGUSD", 1},
+                {"USDJPY", 2},
+                
+            };
+            
             private readonly Dictionary<string, double> tpPorAtivo = new Dictionary<string, double>
             {
                 {"EURUSD", 0},
                 {"GBPUSD", 0},
                 {"NZDUSD", 0},
-                {"EURGBP", 0},
                 {"AUDUSD", 0},
-                {"USDCAD", 0},
                 {"EURJPY", 0},
                 {"XAUUSD", 0},                
-                {"XAGUSD", 0},
-                {"NVDA.US", 0},
-                
+                {"XAGUSD", 0},                               
+                {"USDJPY", 0},
             };
     
             private readonly Dictionary<string, double> slPorAtivo = new Dictionary<string, double>
@@ -160,13 +175,11 @@
                 {"EURUSD", 0},
                 {"GBPUSD", 0},
                 {"NZDUSD", 0},
-                {"EURGBP", 0},
                 {"AUDUSD", 0},
-                {"USDCAD", 0},
                 {"EURJPY", 0},
                 {"XAUUSD", 0},                               
-                {"XAGUSD", 0},
-                {"NVDA.US", 0},
+                {"XAGUSD", 0},                
+                {"USDJPY", 0},
             };
             
             
@@ -175,13 +188,11 @@
                 {"EURUSD", 3},
                 {"GBPUSD", 3},
                 {"NZDUSD", 3},
-                {"EURGBP", 3},
                 {"AUDUSD", 3},
-                {"USDCAD", 3},
                 {"EURJPY", 3},
                 {"XAUUSD", 10},                
-                {"XAGUSD", 10},
-                {"NVDA.US", 0.8},
+                {"XAGUSD", 10},                
+                {"USDJPY", 3},
             };
             
             
@@ -190,13 +201,11 @@
                 {"EURUSD", -5},
                 {"GBPUSD", -5},
                 {"NZDUSD", -1},
-                {"EURGBP", -1},
                 {"AUDUSD", -1},
-                {"USDCAD", -1},
                 {"EURJPY", -1},
                 {"XAUUSD", -50},                
-                {"XAGUSD", -50},
-                {"NVDA.US", -0.1},
+                {"XAGUSD", -50},                
+                {"USDJPY", -3},
             };
             
                private readonly Dictionary<string, double> multiTpReentrada = new Dictionary<string, double>
@@ -204,16 +213,14 @@
                 {"EURUSD", 1.2},
                 {"GBPUSD", 1.2},
                 {"NZDUSD", 1.2},
-                {"EURGBP", 1.2},
                 {"AUDUSD", 1.2},
-                {"USDCAD", 1.2},
                 {"EURJPY", 1.2},
                 {"XAUUSD", 1.5},                
-                {"XAGUSD", 1.5},
-                {"NVDA.US", 1.2},
+                {"XAGUSD", 1.5},  
+                {"USDJPY", 1.2},
             };
 
-
+        
         #endregion
 
 
@@ -260,7 +267,6 @@
         protected override void OnBar()
             {   
                 
-                AtualizarMaximoPosicoes();
                 AtualizarToposBottom();
                 int signal = GetSignal(estrategia);
                 
@@ -273,9 +279,8 @@
                 string direction = isBuy ? "buy" : "sell";
                 
                  var selectedFavorables = ativos.Take(FavorableCount);
-                 var selectedOpposings  = ativarAtivosOpostos 
-                              ? ativosOpostos.Take(OpposingCount)
-                              : Enumerable.Empty<string>();
+                 var selectedOpposings  = ativosOpostos.Take(OpposingCount) ;
+                           
                 
              
                 
@@ -373,14 +378,7 @@
 
         #region Consultas de Posições e Conta
         
-        private void AtualizarMaximoPosicoes()
-        {
-            // Proteção: evita divisão por zero
-            if (capitalPorEntrada <= 0)
-                MaximoPosicoesPorAtivo = 0;
-            else
-                MaximoPosicoesPorAtivo = (int)(Account.Equity / capitalPorEntrada);
-        }
+     
         
         
           private void AtualizarToposBottom()
@@ -547,20 +545,16 @@ private bool PermiteOperarAtrDinamico(string ativo, double atrPips, string direc
                 return PodeEntrarGBPUSD;
             case "NZDUSD":
                 return PodeEntrarNZDUSD;
-            case "EURGBP":
-                return PodeEntrarEURGBP;
             case "AUDUSD":
                 return PodeEntrarAUDUSD;
-            case "USDCAD":
-                return PodeEntrarUSDCAD;
             case "EURJPY":
                 return PodeEntrarEURJPY;
             case "XAUUSD":
                 return PodeEntrarXAUUSD;
             case "XAGUSD":
                 return PodeEntrarXAGUSD;
-            case "NVDA.US":
-                return PodeEntrarNVDA;
+            case "USDJPY":
+                return PodeEntrarUSDJPY;
             default:
                 // Se o símbolo não estiver na lista, optamos por retornar false.
                 // Você pode também lançar uma exceção ou logar uma mensagem de erro, conforme a sua lógica.
@@ -720,10 +714,7 @@ private void AjustarStopPorPercentual(string ativo)
     profity = 5;
    }
    
-   if(ativo == "NVDA.US"){
-    distanciaMinima = 0.05;
-    profity = 0.5;
-   }
+  
 
     // Seleciona posições abertas para este ativo com lucro > 2 (USD ou equivalente)
     var abertas = Positions
@@ -788,7 +779,7 @@ private void AjustarStopPorPercentual(string ativo)
                 
                 int posicoesAbertas = ContarPosicoesAtivas(ativo);
                 double profitNegativo = ObterProfitPosicaoAbertaEmDolar(ativo);
-                if (posicoesAbertas >= MaximoPosicoesPorAtivo)
+                if (posicoesAbertas >= entradasPermitidas[ativo])
                 {
                   
                     return;
@@ -835,12 +826,12 @@ private void AjustarStopPorPercentual(string ativo)
                 if(posicoesAbertas > 0){
                     tpPips *= (posicoesAbertas * multiTpReentrada[ativo]);
                 }
-                if (tipo == "buy" && podeComprar)
+                if (tipo == "buy" &&  ativoPodeComprar[ativo] == true)
                  {
                         ExecuteMarketOrder(TradeType.Buy, ativo, volume, $"{posicoesAbertas}", null, tpPips);
                    
                 }
-                if(tipo == "sell" && podeVender && ativo != "XAUUSD"){
+                if(tipo == "sell" &&  ativoPodeVender[ativo] == true){
                      
                         ExecuteMarketOrder(TradeType.Sell, ativo, volume, $"{posicoesAbertas}", null, tpPips);
                 } 
